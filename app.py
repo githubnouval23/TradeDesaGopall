@@ -1,167 +1,246 @@
 import requests
 import re
 import time
+import json
+import os
+from datetime import datetime
 from telegram import Update
 from telegram.ext import Updater, MessageHandler, Filters, CallbackContext
 
-BOT_TOKEN = "8602327142:AAGQbZEBY2qgw9bZmQexAkcWZJaUk9hsn7c"
+BOT_TOKEN = "8602327142:AAExdkvQ7Iazx1_EmHm1flKHawnt_w78O9w"
 
 CAPITAL = 1000000
-RISK_PERCENT = 0.02
-LEVERAGE = 10
-
-# ===== COOLDOWN SYSTEM =====
-last_signal_time = {}
+MAX_DAILY_LOSS_PERCENT = 6
 COOLDOWN_SECONDS = 120
+MAX_SIGNAL_PER_HOUR = 2
 
+DATA_FILE = "trade_data.json"
 
-# ===== BYBIT BTC TREND =====
-def get_btc_trend(interval):
+last_signal_time = {}
+auto_signal_counter = {"hour": datetime.now().hour, "count": 0}
+
+SCAN_PAIRS = [
+    "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT",
+    "ARBUSDT","AVAXUSDT","DOGEUSDT","LINKUSDT", "HYPEUSDT"
+]
+
+# ================= DATA =================
+
+def load_data():
+    if not os.path.exists(DATA_FILE):
+        return {"total":0,"wins":0,"losses":0,"daily_loss":0,"last_day":datetime.now().strftime("%Y-%m-%d")}
+    with open(DATA_FILE,"r") as f:
+        return json.load(f)
+
+def save_data(data):
+    with open(DATA_FILE,"w") as f:
+        json.dump(data,f)
+
+trade_data = load_data()
+
+def reset_daily():
+    today = datetime.now().strftime("%Y-%m-%d")
+    if trade_data["last_day"] != today:
+        trade_data["daily_loss"] = 0
+        trade_data["last_day"] = today
+        save_data(trade_data)
+
+# ================= MARKET =================
+
+def get_price(symbol):
     try:
-        interval_map = {
-            "15m": "15",
-            "1h": "60"
-        }
-
-        bybit_interval = interval_map.get(interval, "15")
-
-        url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol=BTCUSDT&interval={bybit_interval}&limit=100"
-        response = requests.get(url, timeout=5).json()
-
-        if response["retCode"] != 0:
-            return "neutral", 0
-
-        data = response["result"]["list"]
-        closes = [float(candle[4]) for candle in data[::-1]]
-
-        if len(closes) < 21:
-            return "neutral", 0
-
-        ema9 = sum(closes[-9:]) / 9
-        ema21 = sum(closes[-21:]) / 21
-
-        distance = abs(ema9 - ema21) / ema21 * 100
-        trend = "bullish" if ema9 > ema21 else "bearish"
-
-        return trend, distance
-
+        r = requests.get(f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={symbol}",timeout=5).json()
+        return float(r["result"]["list"][0]["lastPrice"])
     except:
-        return "neutral", 0
+        return None
 
+def get_kline(symbol, interval, limit=100):
+    r = requests.get(f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval={interval}&limit={limit}",timeout=5).json()
+    if r["retCode"]!=0:
+        return []
+    return r["result"]["list"]
 
-# ===== MAIN MESSAGE HANDLER =====
-def handle_message(update: Update, context: CallbackContext):
-    text = update.message.text.upper()
+def get_trend(symbol, interval):
+    try:
+        data = get_kline(symbol, interval, 100)
+        closes=[float(c[4]) for c in data[::-1]]
+        ema9=sum(closes[-9:])/9
+        ema21=sum(closes[-21:])/21
+        return ("bullish" if ema9>ema21 else "bearish"), abs(ema9-ema21)/ema21*100
+    except:
+        return "neutral",0
 
-    if "PAIR:" not in text or "PRICE:" not in text:
-        update.message.reply_text("❌ Format salah.\nGunakan:\nPAIR: SOLUSDT\nPRICE: 90\nTF: 5\nTYPE: LONG")
+def get_atr(symbol):
+    try:
+        data=get_kline(symbol,"15",20)
+        ranges=[float(c[2])-float(c[3]) for c in data]
+        return sum(ranges)/len(ranges)
+    except:
+        return 0
+
+def is_sideways(symbol):
+    try:
+        data=get_kline(symbol,"15",30)
+        highs=[float(c[2]) for c in data]
+        lows=[float(c[3]) for c in data]
+        return (max(highs)-min(lows)) < (sum([h-l for h,l in zip(highs,lows)])/len(highs))*2
+    except:
+        return False
+
+def detect_regime():
+    _,dist=get_trend("BTCUSDT","60")
+    return "TRENDING" if dist>0.3 else "RANGING"
+
+def volume_spike(symbol):
+    try:
+        data=get_kline(symbol,"15",20)
+        vols=[float(c[5]) for c in data]
+        return vols[-1] > (sum(vols[:-1])/len(vols[:-1]))*1.5
+    except:
+        return False
+
+def breakout(symbol):
+    try:
+        data=get_kline(symbol,"15",20)
+        highs=[float(c[2]) for c in data[:-1]]
+        last_close=float(data[0][4])
+        return last_close>max(highs) or last_close<min(highs)
+    except:
+        return False
+
+# ================= CORE ANALYSIS =================
+
+def analyze_pair(pair):
+    price=get_price(pair)
+    if not price: return None
+
+    if is_sideways(pair): return None
+
+    btc1h,_=get_trend("BTCUSDT","60")
+    pair15,dist15=get_trend(pair,"15")
+    pair5,_=get_trend(pair,"5")
+    regime=detect_regime()
+
+    score=50
+
+    if pair15=="bullish" and btc1h=="bullish":
+        signal="LONG"
+        score+=30
+    elif pair15=="bearish" and btc1h=="bearish":
+        signal="SHORT"
+        score+=30
+    else:
+        return None
+
+    if pair5==pair15:
+        score+=15
+
+    if volume_spike(pair): score+=10
+    if breakout(pair): score+=10
+
+    atr=get_atr(pair)
+    sl_dist=atr*1.2
+    tp_dist=atr*2
+
+    if signal=="LONG":
+        sl=round(price-sl_dist,4)
+        tp=round(price+tp_dist,4)
+    else:
+        sl=round(price+sl_dist,4)
+        tp=round(price-tp_dist,4)
+
+    rr=abs(tp-price)/abs(price-sl)
+    min_rr=1.8 if regime=="TRENDING" else 1.3
+
+    if rr<min_rr: return None
+
+    if score<75: return None
+
+    return pair,signal,price,sl,tp,rr,score,regime
+
+# ================= AUTO SCAN =================
+
+def scan_market(context: CallbackContext):
+    global auto_signal_counter
+    current_hour=datetime.now().hour
+
+    if auto_signal_counter["hour"]!=current_hour:
+        auto_signal_counter={"hour":current_hour,"count":0}
+
+    if auto_signal_counter["count"]>=MAX_SIGNAL_PER_HOUR:
         return
 
-    try:
-        pair = re.search(r"PAIR:\s*(.*)", text).group(1).strip()
-        price = float(re.search(r"PRICE:\s*(.*)", text).group(1).strip())
-        tf = re.search(r"TF:\s*(.*)", text).group(1).strip()
+    for pair in SCAN_PAIRS:
+        result=analyze_pair(pair)
+        if result:
+            auto_signal_counter["count"]+=1
+            pair,signal,price,sl,tp,rr,score,regime=result
 
-        type_match = re.search(r"TYPE:\s*(.*)", text)
-        if not type_match:
-            update.message.reply_text("❌ TYPE tidak ditemukan.")
-            return
+            context.bot.send_message(
+                chat_id=context.job.context,
+                text=f"""
+🔥 AUTO SIGNAL
 
-        raw_signal = type_match.group(1).strip()
-
-        # ==== SIGNAL NORMALIZATION ====
-        if raw_signal in ["LONG", "BUY"]:
-            signal = "LONG"
-        elif raw_signal in ["SHORT", "SELL"]:
-            signal = "SHORT"
-        else:
-            update.message.reply_text("❌ TYPE harus LONG / SHORT / BUY / SELL")
-            return
-
-    except:
-        update.message.reply_text("❌ Gagal membaca format. Periksa kembali.")
-        return
-
-    # ===== COOLDOWN CHECK =====
-    current_time = time.time()
-    key = f"{pair}_{signal}"
-
-    if key in last_signal_time:
-        if current_time - last_signal_time[key] < COOLDOWN_SECONDS:
-            update.message.reply_text("⏳ Cooldown aktif. Tunggu sebentar.")
-            return
-
-    last_signal_time[key] = current_time
-
-    # ===== BTC ANALYSIS =====
-    btc_15m, dist_15m = get_btc_trend("15m")
-    btc_1h, dist_1h = get_btc_trend("1h")
-
-    score = 50
-
-    if signal == "LONG":
-        if btc_15m == "bullish":
-            score += 15
-        if btc_1h == "bullish":
-            score += 20
-    else:
-        if btc_15m == "bearish":
-            score += 15
-        if btc_1h == "bearish":
-            score += 20
-
-    score += min(dist_15m, 10)
-    score += min(dist_1h, 15)
-
-    # ===== RISK & RR =====
-    sl = round(price * 0.99, 2) if signal == "LONG" else round(price * 1.01, 2)
-    tp = round(price * 1.02, 2) if signal == "LONG" else round(price * 0.98, 2)
-
-    rr = abs(tp - price) / abs(price - sl)
-
-    if rr >= 1.5:
-        score += 10
-    else:
-        score -= 15
-
-    # ===== CLASSIFICATION =====
-    if score >= 85:
-        label = "🔥 STRONG CONFIRM"
-    elif score >= 70:
-        label = "✅ VALID"
-    elif score >= 60:
-        label = "⚠ WEAK"
-    else:
-        label = "❌ REJECTED"
-
-    message = f"""
-{label}
-
-Pair: {pair}
-Direction: {signal}
-Entry: {price}
+{pair} {signal}
+Entry: {round(price,4)}
 SL: {sl}
 TP: {tp}
-
 RR: {round(rr,2)}
-Score: {int(score)}/100
-
-BTC 15m: {btc_15m}
-BTC 1H: {btc_1h}
+Score: {score}
+Regime: {regime}
 """
+            )
+            break
 
-    update.message.reply_text(message)
+# ================= MANUAL =================
 
+def handle_message(update: Update, context: CallbackContext):
+    reset_daily()
+
+    text=update.message.text.upper().strip()
+
+    # Kalau cuma kirim pair saja
+    if re.match(r"^[A-Z]{3,10}USDT$",text):
+        pair=text
+        result=analyze_pair(pair)
+        if not result:
+            update.message.reply_text("❌ Tidak ada setup kuat saat ini.")
+            return
+
+        pair,signal,price,sl,tp,rr,score,regime=result
+
+        update.message.reply_text(f"""
+📊 MANUAL CONFIRM
+
+{pair} {signal}
+Entry: {round(price,4)}
+SL: {sl}
+TP: {tp}
+RR: {round(rr,2)}
+Score: {score}
+Regime: {regime}
+""")
+        return
+
+    update.message.reply_text("Kirim contoh:\nSOLUSDT")
+
+# ================= START =================
 
 def main():
-    updater = Updater(BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
+    updater=Updater(BOT_TOKEN,use_context=True)
+    dp=updater.dispatcher
 
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+
+    updater.job_queue.run_repeating(
+        scan_market,
+        interval=300,
+        first=15,
+        context="GANTI_DENGAN_CHAT_ID_KAMU"
+    )
 
     updater.start_polling()
     updater.idle()
 
-
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
