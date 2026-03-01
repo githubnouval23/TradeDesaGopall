@@ -7,7 +7,10 @@ from datetime import datetime
 from telegram import Update
 from telegram.ext import Updater, MessageHandler, Filters, CallbackContext
 
-BOT_TOKEN = "8602327142:AAExdkvQ7Iazx1_EmHm1flKHawnt_w78O9w"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+if not BOT_TOKEN:
+    raise Exception("BOT_TOKEN belum di set di Railway Variables")
 
 CAPITAL = 1000000
 MAX_DAILY_LOSS_PERCENT = 6
@@ -38,159 +41,112 @@ def save_data(data):
 
 trade_data = load_data()
 
-def reset_daily():
-    today = datetime.now().strftime("%Y-%m-%d")
-    if trade_data["last_day"] != today:
-        trade_data["daily_loss"] = 0
-        trade_data["last_day"] = today
-        save_data(trade_data)
+# ================= EXCHANGE DETECTOR =================
 
-# ================= MARKET SAFE =================
-
-def pair_exists(symbol):
+def bybit_pair_exists(symbol):
     try:
         r = requests.get(
             f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={symbol}",
             timeout=5
         ).json()
-
-        if r.get("retCode") != 0:
-            return False
-
-        if not r.get("result") or not r["result"].get("list"):
-            return False
-
-        return True
+        return r.get("retCode")==0 and r.get("result",{}).get("list")
     except:
         return False
 
-
-def get_price(symbol):
+def binance_pair_exists(symbol):
     try:
         r = requests.get(
-            f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={symbol}",
+            f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}",
             timeout=5
-        ).json()
+        )
+        return r.status_code==200
+    except:
+        return False
 
-        if r.get("retCode") != 0:
-            return None
+def detect_exchange(symbol):
+    if bybit_pair_exists(symbol):
+        return "BYBIT"
+    if binance_pair_exists(symbol):
+        return "BINANCE"
+    return None
 
-        data = r.get("result", {}).get("list", [])
-        if not data:
-            return None
+# ================= PRICE =================
 
-        return float(data[0]["lastPrice"])
+def get_price(symbol, exchange):
+    try:
+        if exchange=="BYBIT":
+            r = requests.get(
+                f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={symbol}",
+                timeout=5
+            ).json()
+            return float(r["result"]["list"][0]["lastPrice"])
+
+        if exchange=="BINANCE":
+            r = requests.get(
+                f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}",
+                timeout=5
+            ).json()
+            return float(r["price"])
     except:
         return None
 
+# ================= KLINE =================
 
-def get_kline(symbol, interval, limit=100):
+def get_kline(symbol, interval, exchange, limit=100):
     try:
-        r = requests.get(
-            f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval={interval}&limit={limit}",
-            timeout=5
-        ).json()
+        if exchange=="BYBIT":
+            r = requests.get(
+                f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval={interval}&limit={limit}",
+                timeout=5
+            ).json()
+            if r.get("retCode")!=0:
+                return []
+            return r["result"]["list"]
 
-        if r.get("retCode") != 0:
-            return []
-
-        return r.get("result", {}).get("list", [])
+        if exchange=="BINANCE":
+            r = requests.get(
+                f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}m&limit={limit}",
+                timeout=5
+            ).json()
+            return r
     except:
         return []
 
+# ================= TREND =================
 
-def get_trend(symbol, interval):
+def get_trend(symbol, interval, exchange):
     try:
-        data = get_kline(symbol, interval, 100)
-        if len(data) < 21:
-            return "neutral", 0
+        data = get_kline(symbol, interval, exchange, 100)
+        if len(data)<21:
+            return "neutral",0
 
-        closes = [float(c[4]) for c in data[::-1]]
+        if exchange=="BYBIT":
+            closes=[float(c[4]) for c in data[::-1]]
+        else:
+            closes=[float(c[4]) for c in data]
 
-        ema9 = sum(closes[-9:]) / 9
-        ema21 = sum(closes[-21:]) / 21
+        ema9=sum(closes[-9:])/9
+        ema21=sum(closes[-21:])/21
 
-        return ("bullish" if ema9 > ema21 else "bearish"), abs(ema9-ema21)/ema21*100
+        return ("bullish" if ema9>ema21 else "bearish"), abs(ema9-ema21)/ema21*100
     except:
-        return "neutral", 0
+        return "neutral",0
 
-
-def get_atr(symbol):
-    try:
-        data = get_kline(symbol,"15",20)
-        if not data:
-            return 0
-
-        ranges = [float(c[2])-float(c[3]) for c in data]
-        return sum(ranges)/len(ranges)
-    except:
-        return 0
-
-
-def is_sideways(symbol):
-    try:
-        data = get_kline(symbol,"15",30)
-        if not data:
-            return True
-
-        highs=[float(c[2]) for c in data]
-        lows=[float(c[3]) for c in data]
-
-        total = max(highs)-min(lows)
-        avg = sum([h-l for h,l in zip(highs,lows)])/len(highs)
-
-        return total < avg*2
-    except:
-        return True
-
-
-def detect_regime():
-    _,dist = get_trend("BTCUSDT","60")
-    return "TRENDING" if dist>0.3 else "RANGING"
-
-def volume_spike(symbol):
-    try:
-        data=get_kline(symbol,"15",20)
-        if len(data)<2:
-            return False
-
-        vols=[float(c[5]) for c in data]
-        return vols[-1] > (sum(vols[:-1])/len(vols[:-1]))*1.5
-    except:
-        return False
-
-def breakout(symbol):
-    try:
-        data=get_kline(symbol,"15",20)
-        if len(data)<2:
-            return False
-
-        highs=[float(c[2]) for c in data[:-1]]
-        lows=[float(c[3]) for c in data[:-1]]
-        last_close=float(data[0][4])
-
-        return last_close>max(highs) or last_close<min(lows)
-    except:
-        return False
-
-# ================= CORE ANALYSIS =================
+# ================= CORE =================
 
 def analyze_pair(pair):
 
-    if not pair_exists(pair):
+    exchange = detect_exchange(pair)
+    if not exchange:
         return "PAIR_NOT_FOUND"
 
-    price=get_price(pair)
+    price = get_price(pair, exchange)
     if not price:
         return None
 
-    if is_sideways(pair):
-        return None
-
-    btc1h,_=get_trend("BTCUSDT","60")
-    pair15,dist15=get_trend(pair,"15")
-    pair5,_=get_trend(pair,"5")
-    regime=detect_regime()
+    pair15,_ = get_trend(pair,"15",exchange)
+    pair5,_ = get_trend(pair,"5",exchange)
+    btc1h,_ = get_trend("BTCUSDT","60",exchange)
 
     score=50
 
@@ -206,32 +162,17 @@ def analyze_pair(pair):
     if pair5==pair15:
         score+=15
 
-    if volume_spike(pair): score+=10
-    if breakout(pair): score+=10
-
-    atr=get_atr(pair)
-    if atr==0:
+    if score<70:
         return None
 
-    sl_dist=atr*1.2
-    tp_dist=atr*2
-
-    if signal=="LONG":
-        sl=round(price-sl_dist,4)
-        tp=round(price+tp_dist,4)
-    else:
-        sl=round(price+sl_dist,4)
-        tp=round(price-tp_dist,4)
+    sl=round(price*0.995,4) if signal=="LONG" else round(price*1.005,4)
+    tp=round(price*1.01,4) if signal=="LONG" else round(price*0.99,4)
 
     rr=abs(tp-price)/abs(price-sl)
-    min_rr=1.8 if regime=="TRENDING" else 1.3
 
-    if rr<min_rr: return None
-    if score<75: return None
+    return pair,signal,price,sl,tp,rr,score,exchange
 
-    return pair,signal,price,sl,tp,rr,score,regime
-
-# ================= AUTO SCAN =================
+# ================= AUTO =================
 
 def scan_market(context: CallbackContext):
     global auto_signal_counter
@@ -248,20 +189,20 @@ def scan_market(context: CallbackContext):
 
         if result and result!="PAIR_NOT_FOUND":
             auto_signal_counter["count"]+=1
-            pair,signal,price,sl,tp,rr,score,regime=result
+            pair,signal,price,sl,tp,rr,score,exchange=result
 
             context.bot.send_message(
                 chat_id=context.job.context,
                 text=f"""
 🔥 AUTO SIGNAL TradeDesaGopall
 
+Exchange: {exchange}
 {pair} {signal}
 Entry: {round(price,4)}
 SL: {sl}
 TP: {tp}
 RR: {round(rr,2)}
 Score: {score}
-Regime: {regime}
 """
             )
             break
@@ -269,7 +210,6 @@ Regime: {regime}
 # ================= MANUAL =================
 
 def handle_message(update: Update, context: CallbackContext):
-    reset_daily()
 
     text=update.message.text.upper().strip()
 
@@ -278,25 +218,25 @@ def handle_message(update: Update, context: CallbackContext):
         result=analyze_pair(text)
 
         if result=="PAIR_NOT_FOUND":
-            update.message.reply_text("❌ TradeDesaGopall Konfirmasi Pair tidak tersedia di Bybit Linear.")
+            update.message.reply_text("❌ Pair tidak tersedia di Bybit & Binance Futures.")
             return
 
         if not result:
-            update.message.reply_text("❌ TradeDesaGopall Konfirmasi Tidak ada setup kuat saat ini.")
+            update.message.reply_text("❌ TradeDesaGopall Tidak ada setup kuat saat ini.")
             return
 
-        pair,signal,price,sl,tp,rr,score,regime=result
+        pair,signal,price,sl,tp,rr,score,exchange=result
 
         update.message.reply_text(f"""
 📊 MANUAL CONFIRM TradeDesaGopall
 
+Exchange: {exchange}
 {pair} {signal}
 Entry: {round(price,4)}
 SL: {sl}
 TP: {tp}
 RR: {round(rr,2)}
 Score: {score}
-Regime: {regime}
 """)
         return
 
