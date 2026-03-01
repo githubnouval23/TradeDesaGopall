@@ -21,7 +21,7 @@ auto_signal_counter = {"hour": datetime.now().hour, "count": 0}
 
 SCAN_PAIRS = [
     "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT",
-    "ARBUSDT","AVAXUSDT","DOGEUSDT","LINKUSDT", "HYPEUSDT"
+    "ARBUSDT","AVAXUSDT","DOGEUSDT","LINKUSDT","HYPEUSDT"
 ]
 
 # ================= DATA =================
@@ -45,55 +45,115 @@ def reset_daily():
         trade_data["last_day"] = today
         save_data(trade_data)
 
-# ================= MARKET =================
+# ================= MARKET SAFE =================
+
+def pair_exists(symbol):
+    try:
+        r = requests.get(
+            f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={symbol}",
+            timeout=5
+        ).json()
+
+        if r.get("retCode") != 0:
+            return False
+
+        if not r.get("result") or not r["result"].get("list"):
+            return False
+
+        return True
+    except:
+        return False
+
 
 def get_price(symbol):
     try:
-        r = requests.get(f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={symbol}",timeout=5).json()
-        return float(r["result"]["list"][0]["lastPrice"])
+        r = requests.get(
+            f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={symbol}",
+            timeout=5
+        ).json()
+
+        if r.get("retCode") != 0:
+            return None
+
+        data = r.get("result", {}).get("list", [])
+        if not data:
+            return None
+
+        return float(data[0]["lastPrice"])
     except:
         return None
 
+
 def get_kline(symbol, interval, limit=100):
-    r = requests.get(f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval={interval}&limit={limit}",timeout=5).json()
-    if r["retCode"]!=0:
+    try:
+        r = requests.get(
+            f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval={interval}&limit={limit}",
+            timeout=5
+        ).json()
+
+        if r.get("retCode") != 0:
+            return []
+
+        return r.get("result", {}).get("list", [])
+    except:
         return []
-    return r["result"]["list"]
+
 
 def get_trend(symbol, interval):
     try:
         data = get_kline(symbol, interval, 100)
-        closes=[float(c[4]) for c in data[::-1]]
-        ema9=sum(closes[-9:])/9
-        ema21=sum(closes[-21:])/21
-        return ("bullish" if ema9>ema21 else "bearish"), abs(ema9-ema21)/ema21*100
+        if len(data) < 21:
+            return "neutral", 0
+
+        closes = [float(c[4]) for c in data[::-1]]
+
+        ema9 = sum(closes[-9:]) / 9
+        ema21 = sum(closes[-21:]) / 21
+
+        return ("bullish" if ema9 > ema21 else "bearish"), abs(ema9-ema21)/ema21*100
     except:
-        return "neutral",0
+        return "neutral", 0
+
 
 def get_atr(symbol):
     try:
-        data=get_kline(symbol,"15",20)
-        ranges=[float(c[2])-float(c[3]) for c in data]
+        data = get_kline(symbol,"15",20)
+        if not data:
+            return 0
+
+        ranges = [float(c[2])-float(c[3]) for c in data]
         return sum(ranges)/len(ranges)
     except:
         return 0
 
+
 def is_sideways(symbol):
     try:
-        data=get_kline(symbol,"15",30)
+        data = get_kline(symbol,"15",30)
+        if not data:
+            return True
+
         highs=[float(c[2]) for c in data]
         lows=[float(c[3]) for c in data]
-        return (max(highs)-min(lows)) < (sum([h-l for h,l in zip(highs,lows)])/len(highs))*2
+
+        total = max(highs)-min(lows)
+        avg = sum([h-l for h,l in zip(highs,lows)])/len(highs)
+
+        return total < avg*2
     except:
-        return False
+        return True
+
 
 def detect_regime():
-    _,dist=get_trend("BTCUSDT","60")
+    _,dist = get_trend("BTCUSDT","60")
     return "TRENDING" if dist>0.3 else "RANGING"
 
 def volume_spike(symbol):
     try:
         data=get_kline(symbol,"15",20)
+        if len(data)<2:
+            return False
+
         vols=[float(c[5]) for c in data]
         return vols[-1] > (sum(vols[:-1])/len(vols[:-1]))*1.5
     except:
@@ -102,19 +162,30 @@ def volume_spike(symbol):
 def breakout(symbol):
     try:
         data=get_kline(symbol,"15",20)
+        if len(data)<2:
+            return False
+
         highs=[float(c[2]) for c in data[:-1]]
+        lows=[float(c[3]) for c in data[:-1]]
         last_close=float(data[0][4])
-        return last_close>max(highs) or last_close<min(highs)
+
+        return last_close>max(highs) or last_close<min(lows)
     except:
         return False
 
 # ================= CORE ANALYSIS =================
 
 def analyze_pair(pair):
-    price=get_price(pair)
-    if not price: return None
 
-    if is_sideways(pair): return None
+    if not pair_exists(pair):
+        return "PAIR_NOT_FOUND"
+
+    price=get_price(pair)
+    if not price:
+        return None
+
+    if is_sideways(pair):
+        return None
 
     btc1h,_=get_trend("BTCUSDT","60")
     pair15,dist15=get_trend(pair,"15")
@@ -139,6 +210,9 @@ def analyze_pair(pair):
     if breakout(pair): score+=10
 
     atr=get_atr(pair)
+    if atr==0:
+        return None
+
     sl_dist=atr*1.2
     tp_dist=atr*2
 
@@ -153,7 +227,6 @@ def analyze_pair(pair):
     min_rr=1.8 if regime=="TRENDING" else 1.3
 
     if rr<min_rr: return None
-
     if score<75: return None
 
     return pair,signal,price,sl,tp,rr,score,regime
@@ -172,14 +245,15 @@ def scan_market(context: CallbackContext):
 
     for pair in SCAN_PAIRS:
         result=analyze_pair(pair)
-        if result:
+
+        if result and result!="PAIR_NOT_FOUND":
             auto_signal_counter["count"]+=1
             pair,signal,price,sl,tp,rr,score,regime=result
 
             context.bot.send_message(
                 chat_id=context.job.context,
                 text=f"""
-🔥 AUTO SIGNAL
+🔥 AUTO SIGNAL TradeDesaGopall
 
 {pair} {signal}
 Entry: {round(price,4)}
@@ -199,18 +273,22 @@ def handle_message(update: Update, context: CallbackContext):
 
     text=update.message.text.upper().strip()
 
-    # Kalau cuma kirim pair saja
-    if re.match(r"^[A-Z]{3,10}USDT$",text):
-        pair=text
-        result=analyze_pair(pair)
+    if re.match(r"^[A-Z]{3,15}USDT$",text):
+
+        result=analyze_pair(text)
+
+        if result=="PAIR_NOT_FOUND":
+            update.message.reply_text("❌ TradeDesaGopall Konfirmasi Pair tidak tersedia di Bybit Linear.")
+            return
+
         if not result:
-            update.message.reply_text("❌ Tidak ada setup kuat saat ini.")
+            update.message.reply_text("❌ TradeDesaGopall Konfirmasi Tidak ada setup kuat saat ini.")
             return
 
         pair,signal,price,sl,tp,rr,score,regime=result
 
         update.message.reply_text(f"""
-📊 MANUAL CONFIRM
+📊 MANUAL CONFIRM TradeDesaGopall
 
 {pair} {signal}
 Entry: {round(price,4)}
