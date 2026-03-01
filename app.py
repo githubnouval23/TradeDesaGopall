@@ -1,7 +1,7 @@
 import requests
-from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 import re
+from telegram import Update
+from telegram.ext import Updater, MessageHandler, Filters, CallbackContext
 
 BOT_TOKEN = "8602327142:AAHYQxE5RPejuQvhyHhsUC0MF_ZblT4DlMU"
 
@@ -9,14 +9,20 @@ CAPITAL = 1000000
 RISK_PERCENT = 0.02
 LEVERAGE = 10
 
+
 def get_btc_trend():
-    data = requests.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=15m&limit=50").json()
+    data = requests.get(
+        "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=15m&limit=50"
+    ).json()
+
     closes = [float(candle[4]) for candle in data]
     ema9 = sum(closes[-9:]) / 9
     ema21 = sum(closes[-21:]) / 21
+
     return "bullish" if ema9 > ema21 else "bearish"
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+def handle_message(update: Update, context: CallbackContext):
     text = update.message.text
 
     if "PAIR:" not in text:
@@ -32,16 +38,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if signal == "LONG" and btc_trend == "bearish":
         confidence -= 40
+
     if signal == "SHORT" and btc_trend == "bullish":
         confidence -= 40
 
     if confidence < 60:
-        await update.message.reply_text("❌ AI REJECTED (Lawan arah BTC)")
+        update.message.reply_text("❌ AI REJECTED (Lawan arah BTC)")
         return
 
     risk_amount = CAPITAL * RISK_PERCENT
-    sl = round(price * 0.99, 2) if signal == "LONG" else round(price * 1.01, 2)
-    tp = round(price * 1.02, 2) if signal == "LONG" else round(price * 0.98, 2)
+
+    if signal == "LONG":
+        sl = round(price * 0.99, 2)
+        tp = round(price * 1.02, 2)
+    else:
+        sl = round(price * 1.01, 2)
+        tp = round(price * 0.98, 2)
 
     move_percent = abs(price - sl) / price
     margin = risk_amount / (move_percent * LEVERAGE)
@@ -63,8 +75,18 @@ Confidence: {confidence}%
 BTC Trend: {btc_trend}
 """
 
-    await update.message.reply_text(message)
+    update.message.reply_text(message)
 
-app = ApplicationBuilder().token(BOT_TOKEN).build()
-app.add_handler(MessageHandler(filters.TEXT, handle_message))
-app.run_polling()
+
+def main():
+    updater = Updater(BOT_TOKEN, use_context=True)
+    dp = updater.dispatcher
+
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+
+    updater.start_polling()
+    updater.idle()
+
+
+if __name__ == "__main__":
+    main()
