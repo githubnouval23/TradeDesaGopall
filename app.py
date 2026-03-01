@@ -260,7 +260,8 @@ Winrate Bot: {round(winrate,2)}%
     update.message.reply_text("Kirim contoh:\nBTCUSDT")
 
 # ================= START =================
-
+print("TEST GOOGLE:", requests.get("https://www.google.com").status_code)
+print("TEST BINANCE:", requests.get("https://api.binance.com/api/v3/time").text)
 def main():
     updater=Updater(BOT_TOKEN,use_context=True)
     dp=updater.dispatcher
@@ -279,4 +280,5 @@ def main():
 
 if __name__=="__main__":
     main()
+
 
