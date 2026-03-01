@@ -11,15 +11,26 @@ LEVERAGE = 10
 
 
 def get_btc_trend():
-    data = requests.get(
-        "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=15m&limit=50"
-    ).json()
+    try:
+        url = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=15m&limit=50"
+        response = requests.get(url, timeout=5)
+        data = response.json()
 
-    closes = [float(candle[4]) for candle in data]
-    ema9 = sum(closes[-9:]) / 9
-    ema21 = sum(closes[-21:]) / 21
+        if not isinstance(data, list):
+            return "neutral"
 
-    return "bullish" if ema9 > ema21 else "bearish"
+        closes = [float(candle[4]) for candle in data]
+
+        if len(closes) < 21:
+            return "neutral"
+
+        ema9 = sum(closes[-9:]) / 9
+        ema21 = sum(closes[-21:]) / 21
+
+        return "bullish" if ema9 > ema21 else "bearish"
+
+    except Exception:
+        return "neutral"
 
 
 def handle_message(update: Update, context: CallbackContext):
@@ -90,3 +101,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
