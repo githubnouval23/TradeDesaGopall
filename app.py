@@ -3,7 +3,7 @@ import re
 from telegram import Update
 from telegram.ext import Updater, MessageHandler, Filters, CallbackContext
 
-BOT_TOKEN = "8602327142:AAHYQxE5RPejuQvhyHhsUC0MF_ZblT4DlMU"
+BOT_TOKEN = "8602327142:AAGQbZEBY2qgw9bZmQexAkcWZJaUk9hsn7c"
 
 CAPITAL = 1000000
 RISK_PERCENT = 0.02
@@ -54,7 +54,7 @@ def handle_message(update: Update, context: CallbackContext):
         confidence -= 40
 
     if confidence < 60:
-        update.message.reply_text("❌ AI REJECTED (Lawan arah BTC)")
+        update.message.reply_text("❌ TradeDesaGopall REJECTED (Lawan arah BTC)")
         return
 
     risk_amount = CAPITAL * RISK_PERCENT
@@ -70,7 +70,7 @@ def handle_message(update: Update, context: CallbackContext):
     margin = risk_amount / (move_percent * LEVERAGE)
 
     message = f"""
-⚡ AI CONFIRMED
+⚡ TradeDesaGopall CONFIRMED
 
 Pair: {pair}
 TF: {tf}
@@ -101,4 +101,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
