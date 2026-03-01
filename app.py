@@ -43,17 +43,21 @@ performance = load_data()
 def get_price(symbol):
     try:
         r = requests.get(
-            f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}",
+            f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}",
             timeout=10
         ).json()
-        return float(r["price"])
-    except:
+
+        if "price" in r:
+            return float(r["price"])
+        return None
+    except Exception as e:
+        print("SPOT ERROR:", e)
         return None
 
 def get_kline(symbol, interval, limit=100):
     try:
         return requests.get(
-            f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}m&limit={limit}",
+            f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}m&limit={limit}",
             timeout=10
         ).json()
     except:
@@ -275,3 +279,4 @@ def main():
 
 if __name__=="__main__":
     main()
+
