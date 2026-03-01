@@ -8,6 +8,8 @@ from telegram.ext import Updater, MessageHandler, Filters, CallbackContext
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
+requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
+
 if not BOT_TOKEN:
     raise Exception("BOT_TOKEN belum di set di Railway Variables")
 
@@ -280,5 +282,6 @@ def main():
 
 if __name__=="__main__":
     main()
+
 
 
