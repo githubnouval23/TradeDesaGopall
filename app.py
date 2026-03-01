@@ -22,28 +22,34 @@ SCAN_PAIRS = [
 # ================= PRICE (AUTO FALLBACK) =================
 
 def get_price(symbol):
+
+    # ===== BYBIT =====
     try:
         r = requests.get(
             f"https://api.bybit.com/v5/market/tickers?category=linear&symbol={symbol}",
-            timeout=5
-        ).json()
+            timeout=10
+        )
+        data = r.json()
 
-        if r.get("retCode") == 0:
-            data = r.get("result", {}).get("list", [])
-            if data:
-                return float(data[0]["lastPrice"]), "BYBIT"
-    except:
-        pass
+        if data.get("retCode") == 0:
+            result = data.get("result", {}).get("list", [])
+            if result:
+                return float(result[0]["lastPrice"]), "BYBIT"
+    except Exception as e:
+        print("BYBIT ERROR:", e)
 
+    # ===== BINANCE =====
     try:
         r = requests.get(
             f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}",
-            timeout=5
-        ).json()
-        if "price" in r:
-            return float(r["price"]), "BINANCE"
-    except:
-        pass
+            timeout=10
+        )
+        data = r.json()
+
+        if "price" in data:
+            return float(data["price"]), "BINANCE"
+    except Exception as e:
+        print("BINANCE ERROR:", e)
 
     return None, None
 
@@ -296,4 +302,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
