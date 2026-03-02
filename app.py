@@ -1,7 +1,6 @@
 import requests
 import re
 import os
-import json
 import threading
 import time
 from datetime import datetime
@@ -20,7 +19,7 @@ if not BOT_TOKEN or not WEBHOOK_URL or not CHAT_ID:
 bot = Bot(token=BOT_TOKEN)
 app = Flask(__name__)
 
-SCAN_INTERVAL = 300  # 5 menit
+SCAN_INTERVAL = 300
 MAX_SIGNAL_PER_HOUR = 2
 
 auto_signal_counter = {"hour": datetime.now().hour, "count": 0}
@@ -30,33 +29,40 @@ SCAN_PAIRS = [
     "ARBUSDT","AVAXUSDT","DOGEUSDT","LINKUSDT"
 ]
 
-# ================= BINANCE API =================
+BASE_URL = "https://fapi.binance.com"
+
+# ================= BINANCE FUTURES =================
 
 def get_price(symbol):
     try:
         r = requests.get(
-            f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}",
+            f"{BASE_URL}/fapi/v1/ticker/price?symbol={symbol}",
             timeout=10
         )
+
         if r.status_code != 200:
+            print("HTTP ERROR:", r.status_code)
             return None
 
         data = r.json()
 
         if "code" in data:
+            print("API ERROR:", data)
             return "INVALID"
 
         return float(data["price"])
-    except:
+    except Exception as e:
+        print("PRICE ERROR:", e)
         return None
 
 
 def get_kline(symbol, interval, limit=100):
     try:
-        return requests.get(
-            f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}m&limit={limit}",
+        r = requests.get(
+            f"{BASE_URL}/fapi/v1/klines?symbol={symbol}&interval={interval}m&limit={limit}",
             timeout=10
-        ).json()
+        )
+        return r.json()
     except:
         return []
 
@@ -83,8 +89,7 @@ def get_atr(symbol):
     ranges = [float(c[2]) - float(c[3]) for c in data]
     return sum(ranges) / len(ranges)
 
-
-# ================= CORE ENGINE =================
+# ================= CORE =================
 
 def analyze_pair(pair):
 
@@ -128,7 +133,6 @@ def analyze_pair(pair):
 
     return pair, signal, price, sl, tp, rr, score
 
-
 # ================= AUTO SCANNER =================
 
 def auto_scan_loop():
@@ -155,7 +159,7 @@ def auto_scan_loop():
                         bot.send_message(
                             chat_id=CHAT_ID,
                             text=f"""
-🔥 AUTO SIGNAL TraderDesaGopall
+🔥 AUTO SIGNAL FUTURES
 
 {pair} {signal}
 
@@ -171,10 +175,9 @@ Confidence: {score}/100
                         break
 
         except Exception as e:
-            print("AUTO SCAN ERROR:", e)
+            print("AUTO ERROR:", e)
 
         time.sleep(SCAN_INTERVAL)
-
 
 # ================= WEBHOOK =================
 
@@ -191,12 +194,12 @@ def webhook():
 
             if result == "PAIR_NOT_FOUND":
                 bot.send_message(chat_id=update.message.chat_id,
-                                 text="❌ TraderDesaGopall Konfirmasi Pair tidak tersedia di Binance.")
+                                 text="❌ Pair tidak tersedia di Binance Futures.")
                 return "ok"
 
             if not result:
                 bot.send_message(chat_id=update.message.chat_id,
-                                 text="❌ TraderDesaGopall Konfirmasi Tidak ada setup kuat saat ini.")
+                                 text="❌ Tidak ada setup kuat saat ini.")
                 return "ok"
 
             pair, signal, price, sl, tp, rr, score = result
@@ -204,7 +207,7 @@ def webhook():
             bot.send_message(
                 chat_id=update.message.chat_id,
                 text=f"""
-📊 MANUAL CONFIRM TraderDesaGopall
+📊 MANUAL CONFIRM FUTURES
 
 {pair} {signal}
 
@@ -219,7 +222,6 @@ Confidence: {score}/100
 
     return "ok"
 
-
 # ================= START =================
 
 if __name__ == "__main__":
@@ -229,7 +231,6 @@ if __name__ == "__main__":
         f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url={WEBHOOK_URL}/{BOT_TOKEN}"
     )
 
-    # start background scanner
     thread = threading.Thread(target=auto_scan_loop)
     thread.daemon = True
     thread.start()
