@@ -2,25 +2,26 @@ import requests
 import re
 import os
 import json
+import threading
+import time
 from datetime import datetime
-from telegram import Update
-from telegram.ext import Updater, MessageHandler, Filters, CallbackContext
+from flask import Flask, request
+from telegram import Bot, Update
 
 # ================= CONFIG =================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+CHAT_ID = os.getenv("CHAT_ID")
 
-if not BOT_TOKEN:
-    raise Exception("BOT_TOKEN belum di set di Railway Variables")
+if not BOT_TOKEN or not WEBHOOK_URL or not CHAT_ID:
+    raise Exception("BOT_TOKEN / WEBHOOK_URL / CHAT_ID belum diset")
 
-# Hapus webhook kalau ada (hindari conflict)
-requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
+bot = Bot(token=BOT_TOKEN)
+app = Flask(__name__)
 
-CAPITAL = 1000000
-RISK_PERCENT = 0.02
+SCAN_INTERVAL = 300  # 5 menit
 MAX_SIGNAL_PER_HOUR = 2
-
-DATA_FILE = "performance.json"
 
 auto_signal_counter = {"hour": datetime.now().hour, "count": 0}
 
@@ -29,21 +30,7 @@ SCAN_PAIRS = [
     "ARBUSDT","AVAXUSDT","DOGEUSDT","LINKUSDT"
 ]
 
-# ================= PERFORMANCE =================
-
-def load_data():
-    if not os.path.exists(DATA_FILE):
-        return {"total":0,"wins":0,"losses":0}
-    with open(DATA_FILE,"r") as f:
-        return json.load(f)
-
-def save_data(data):
-    with open(DATA_FILE,"w") as f:
-        json.dump(data,f)
-
-performance = load_data()
-
-# ================= BINANCE SPOT API =================
+# ================= BINANCE API =================
 
 def get_price(symbol):
     try:
@@ -51,42 +38,26 @@ def get_price(symbol):
             f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}",
             timeout=10
         )
-
         if r.status_code != 200:
-            print("HTTP ERROR:", r.status_code, r.text)
             return None
 
         data = r.json()
 
-        # Symbol benar-benar tidak ada
-        if "code" in data and data["code"] != 0:
-            print("INVALID SYMBOL:", data)
+        if "code" in data:
             return "INVALID"
 
-        if "price" in data:
-            return float(data["price"])
-
-        return None
-
-    except Exception as e:
-        print("SPOT ERROR:", e)
+        return float(data["price"])
+    except:
         return None
 
 
 def get_kline(symbol, interval, limit=100):
     try:
-        r = requests.get(
+        return requests.get(
             f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}m&limit={limit}",
             timeout=10
-        )
-
-        if r.status_code != 200:
-            print("KLINE HTTP ERROR:", r.status_code)
-            return []
-
-        return r.json()
-    except Exception as e:
-        print("KLINE ERROR:", e)
+        ).json()
+    except:
         return []
 
 # ================= INDICATORS =================
@@ -94,14 +65,14 @@ def get_kline(symbol, interval, limit=100):
 def get_trend(symbol, interval):
     data = get_kline(symbol, interval, 100)
     if len(data) < 21:
-        return "neutral", 0
+        return "neutral"
 
     closes = [float(c[4]) for c in data]
 
     ema9 = sum(closes[-9:]) / 9
     ema21 = sum(closes[-21:]) / 21
 
-    return ("bullish" if ema9 > ema21 else "bearish"), abs(ema9-ema21)/ema21*100
+    return "bullish" if ema9 > ema21 else "bearish"
 
 
 def get_atr(symbol):
@@ -109,34 +80,9 @@ def get_atr(symbol):
     if len(data) < 20:
         return 0
 
-    ranges = [float(c[2])-float(c[3]) for c in data]
-    return sum(ranges)/len(ranges)
+    ranges = [float(c[2]) - float(c[3]) for c in data]
+    return sum(ranges) / len(ranges)
 
-
-def volume_spike(symbol):
-    data = get_kline(symbol, "15", 20)
-    if len(data) < 20:
-        return False
-
-    vols = [float(c[5]) for c in data]
-    return vols[-1] > (sum(vols[:-1])/len(vols[:-1]))*1.5
-
-
-def breakout(symbol):
-    data = get_kline(symbol, "15", 20)
-    if len(data) < 20:
-        return False
-
-    highs = [float(c[2]) for c in data[:-1]]
-    lows = [float(c[3]) for c in data[:-1]]
-    last_close = float(data[-1][4])
-
-    return last_close > max(highs) or last_close < min(lows)
-
-
-def detect_regime():
-    _, dist = get_trend("BTCUSDT", "60")
-    return "TRENDING" if dist > 0.3 else "RANGING"
 
 # ================= CORE ENGINE =================
 
@@ -148,99 +94,69 @@ def analyze_pair(pair):
         return "PAIR_NOT_FOUND"
 
     if price is None:
-        print("API ERROR — skip this pair")
         return None
 
-    pair15,_ = get_trend(pair,"15")
-    pair5,_ = get_trend(pair,"5")
-    btc1h,_ = get_trend("BTCUSDT","60")
-    btc15,_ = get_trend("BTCUSDT","15")
-
-    regime = detect_regime()
+    pair15 = get_trend(pair,"15")
+    pair5 = get_trend(pair,"5")
+    btc1h = get_trend("BTCUSDT","60")
 
     score = 50
 
-    if pair15=="bullish" and btc1h=="bullish":
+    if pair15 == "bullish" and btc1h == "bullish":
         signal="LONG"
         score+=25
-    elif pair15=="bearish" and btc1h=="bearish":
+    elif pair15 == "bearish" and btc1h == "bearish":
         signal="SHORT"
         score+=25
     else:
         return None
 
-    if pair5==pair15:
+    if pair5 == pair15:
         score+=15
 
-    if btc15==pair15:
-        score+=10
-
-    if volume_spike(pair):
-        score+=10
-
-    if breakout(pair):
-        score+=10
-
     atr = get_atr(pair)
-    if atr==0:
+    if atr == 0:
         return None
 
-    sl_dist = atr*1.2
-    tp_dist = atr*2
-
-    if signal=="LONG":
-        sl=round(price-sl_dist,4)
-        tp=round(price+tp_dist,4)
-    else:
-        sl=round(price+sl_dist,4)
-        tp=round(price-tp_dist,4)
+    sl = round(price - atr*1.2,4) if signal=="LONG" else round(price + atr*1.2,4)
+    tp = round(price + atr*2,4) if signal=="LONG" else round(price - atr*2,4)
 
     rr = abs(tp-price)/abs(price-sl)
 
-    min_rr = 2 if regime=="TRENDING" else 1.3
-
-    if rr < min_rr:
+    if rr < 1.8:
         return None
 
-    risk_amount = CAPITAL*RISK_PERCENT
-    position_size = risk_amount/abs(price-sl)
+    return pair, signal, price, sl, tp, rr, score
 
-    if score>=90:
-        label="🎯 SNIPER"
-    elif score>=80:
-        label="🔥 STRONG"
-    elif score>=70:
-        label="✅ VALID"
-    else:
-        label="⚠ WEAK"
 
-    return pair,signal,price,sl,tp,rr,score,label,regime,round(position_size,2)
+# ================= AUTO SCANNER =================
 
-# ================= AUTO SCAN =================
-
-def scan_market(context: CallbackContext):
+def auto_scan_loop():
     global auto_signal_counter
-    current_hour=datetime.now().hour
 
-    if auto_signal_counter["hour"]!=current_hour:
-        auto_signal_counter={"hour":current_hour,"count":0}
+    while True:
+        try:
+            current_hour = datetime.now().hour
 
-    if auto_signal_counter["count"]>=MAX_SIGNAL_PER_HOUR:
-        return
+            if auto_signal_counter["hour"] != current_hour:
+                auto_signal_counter = {"hour": current_hour, "count": 0}
 
-    for pair in SCAN_PAIRS:
-        result=analyze_pair(pair)
+            if auto_signal_counter["count"] < MAX_SIGNAL_PER_HOUR:
 
-        if result and result!="PAIR_NOT_FOUND":
-            auto_signal_counter["count"]+=1
-            pair,signal,price,sl,tp,rr,score,label,regime,pos_size=result
+                for pair in SCAN_PAIRS:
 
-            context.bot.send_message(
-                chat_id=context.job.context,
-                text=f"""
+                    result = analyze_pair(pair)
+
+                    if result and result != "PAIR_NOT_FOUND":
+
+                        auto_signal_counter["count"] += 1
+                        pair, signal, price, sl, tp, rr, score = result
+
+                        bot.send_message(
+                            chat_id=CHAT_ID,
+                            text=f"""
 🔥 AUTO SIGNAL TraderDesaGopall
 
-{label}
 {pair} {signal}
 
 Entry: {round(price,4)}
@@ -248,39 +164,48 @@ SL: {sl}
 TP: {tp}
 
 RR: {round(rr,2)}
-Regime: {regime}
 Confidence: {score}/100
-Position Size: {pos_size}
 """
-            )
-            break
+                        )
 
-# ================= MANUAL =================
+                        break
 
-def handle_message(update: Update, context: CallbackContext):
+        except Exception as e:
+            print("AUTO SCAN ERROR:", e)
 
-    text=update.message.text.upper().strip()
+        time.sleep(SCAN_INTERVAL)
 
-    if re.match(r"^[A-Z]{3,15}USDT$",text):
 
-        result=analyze_pair(text)
+# ================= WEBHOOK =================
 
-        if result=="PAIR_NOT_FOUND":
-            update.message.reply_text("❌ Pair tidak tersedia di Binance.")
-            return
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), bot)
 
-        if not result:
-            update.message.reply_text("❌ Tidak ada setup kuat saat ini.")
-            return
+    if update.message and update.message.text:
+        text = update.message.text.upper().strip()
 
-        pair,signal,price,sl,tp,rr,score,label,regime,pos_size=result
+        if re.match(r"^[A-Z]{3,15}USDT$", text):
 
-        winrate = (performance["wins"]/performance["total"]*100) if performance["total"]>0 else 0
+            result = analyze_pair(text)
 
-        update.message.reply_text(f"""
+            if result == "PAIR_NOT_FOUND":
+                bot.send_message(chat_id=update.message.chat_id,
+                                 text="❌ TraderDesaGopall Konfirmasi Pair tidak tersedia di Binance.")
+                return "ok"
+
+            if not result:
+                bot.send_message(chat_id=update.message.chat_id,
+                                 text="❌ TraderDesaGopall Konfirmasi Tidak ada setup kuat saat ini.")
+                return "ok"
+
+            pair, signal, price, sl, tp, rr, score = result
+
+            bot.send_message(
+                chat_id=update.message.chat_id,
+                text=f"""
 📊 MANUAL CONFIRM TraderDesaGopall
 
-{label}
 {pair} {signal}
 
 Entry: {round(price,4)}
@@ -288,33 +213,25 @@ SL: {sl}
 TP: {tp}
 
 RR: {round(rr,2)}
-Regime: {regime}
 Confidence: {score}/100
-Position Size: {pos_size}
+"""
+            )
 
-Winrate Bot: {round(winrate,2)}%
-""")
-        return
+    return "ok"
 
-    update.message.reply_text("Kirim contoh:\nBTCUSDT")
 
 # ================= START =================
 
-def main():
-    updater=Updater(BOT_TOKEN,use_context=True)
-    dp=updater.dispatcher
+if __name__ == "__main__":
 
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-
-    updater.job_queue.run_repeating(
-        scan_market,
-        interval=300,
-        first=15,
-        context="8602327142"
+    # set webhook
+    requests.get(
+        f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url={WEBHOOK_URL}/{BOT_TOKEN}"
     )
 
-    updater.start_polling()
-    updater.idle()
+    # start background scanner
+    thread = threading.Thread(target=auto_scan_loop)
+    thread.daemon = True
+    thread.start()
 
-if __name__=="__main__":
-    main()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
