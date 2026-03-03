@@ -31,28 +31,18 @@ SCAN_PAIRS = [
 
 BASE_URL = "https://fapi.binance.com"
 
-# ================= BINANCE FUTURES =================
+# ================= BINANCE =================
 
 def get_price(symbol):
     try:
-        r = requests.get(
-            f"{BASE_URL}/fapi/v1/ticker/price?symbol={symbol}",
-            timeout=10
-        )
-
-        if r.status_code != 200:
-            print("HTTP ERROR:", r.status_code)
-            return None
-
+        r = requests.get(f"{BASE_URL}/fapi/v1/ticker/price?symbol={symbol}", timeout=10)
         data = r.json()
 
         if "code" in data:
-            print("API ERROR:", data)
-            return "INVALID"
+            return None
 
         return float(data["price"])
-    except Exception as e:
-        print("PRICE ERROR:", e)
+    except:
         return None
 
 
@@ -71,7 +61,7 @@ def get_kline(symbol, interval, limit=100):
 def get_trend(symbol, interval):
     data = get_kline(symbol, interval, 100)
     if len(data) < 21:
-        return "neutral"
+        return None
 
     closes = [float(c[4]) for c in data]
 
@@ -89,21 +79,20 @@ def get_atr(symbol):
     ranges = [float(c[2]) - float(c[3]) for c in data]
     return sum(ranges) / len(ranges)
 
-# ================= CORE =================
+# ================= ANALYSIS =================
 
 def analyze_pair(pair):
 
     price = get_price(pair)
-
-    if price == "INVALID":
-        return "PAIR_NOT_FOUND"
-
-    if price is None:
+    if not price:
         return None
 
     pair15 = get_trend(pair,"15")
     pair5 = get_trend(pair,"5")
     btc1h = get_trend("BTCUSDT","60")
+
+    if not pair15 or not btc1h:
+        return None
 
     score = 50
 
@@ -138,6 +127,8 @@ def analyze_pair(pair):
 def auto_scan_loop():
     global auto_signal_counter
 
+    print("AUTO SCANNER STARTED")
+
     while True:
         try:
             current_hour = datetime.now().hour
@@ -151,10 +142,12 @@ def auto_scan_loop():
 
                     result = analyze_pair(pair)
 
-                    if result and result != "PAIR_NOT_FOUND":
+                    if result:
 
                         auto_signal_counter["count"] += 1
                         pair, signal, price, sl, tp, rr, score = result
+
+                        print("SIGNAL:", pair, signal)
 
                         bot.send_message(
                             chat_id=CHAT_ID,
@@ -192,14 +185,11 @@ def webhook():
 
             result = analyze_pair(text)
 
-            if result == "PAIR_NOT_FOUND":
-                bot.send_message(chat_id=update.message.chat_id,
-                                 text="❌ Pair tidak tersedia di Binance Futures.")
-                return "ok"
-
             if not result:
-                bot.send_message(chat_id=update.message.chat_id,
-                                 text="❌ Tidak ada setup kuat saat ini.")
+                bot.send_message(
+                    chat_id=update.message.chat_id,
+                    text="❌ Tidak ada setup kuat saat ini."
+                )
                 return "ok"
 
             pair, signal, price, sl, tp, rr, score = result
@@ -224,15 +214,12 @@ Confidence: {score}/100
 
 # ================= START =================
 
-if __name__ == "__main__":
+# JALAN SELALU (TIDAK TERGANTUNG __main__)
+thread = threading.Thread(target=auto_scan_loop)
+thread.daemon = True
+thread.start()
 
-    # set webhook
-    requests.get(
-        f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url={WEBHOOK_URL}/{BOT_TOKEN}"
-    )
-
-    thread = threading.Thread(target=auto_scan_loop)
-    thread.daemon = True
-    thread.start()
-
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+# Set webhook sekali saat boot
+requests.get(
+    f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url={WEBHOOK_URL}/{BOT_TOKEN}"
+)
