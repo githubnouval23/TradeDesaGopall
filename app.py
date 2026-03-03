@@ -41,10 +41,14 @@ def get_price(symbol):
             timeout=10
         )
 
+        if r.status_code != 200:
+            print("PRICE HTTP ERROR:", r.status_code)
+            return None
+
         data = r.json()
 
-        if data["retCode"] != 0:
-            print("PRICE ERROR:", data)
+        if data.get("retCode") != 0:
+            print("PRICE API ERROR:", data)
             return None
 
         return float(data["result"]["list"][0]["lastPrice"])
@@ -56,21 +60,36 @@ def get_price(symbol):
 
 def get_kline(symbol, interval, limit=100):
     try:
+        interval_map = {
+            1: "1",
+            3: "3",
+            5: "5",
+            15: "15",
+            30: "30",
+            60: "60",
+            240: "240",
+            1440: "D"
+        }
+
         r = requests.get(
             f"{BASE_URL}/v5/market/kline",
             params={
                 "category": "linear",
                 "symbol": symbol,
-                "interval": str(interval),
+                "interval": interval_map.get(interval, "15"),
                 "limit": limit
             },
             timeout=10
         )
 
+        if r.status_code != 200:
+            print("KLINE HTTP ERROR:", r.status_code)
+            return []
+
         data = r.json()
 
-        if data["retCode"] != 0:
-            print("KLINE ERROR:", data)
+        if data.get("retCode") != 0:
+            print("KLINE API ERROR:", data)
             return []
 
         return data["result"]["list"]
@@ -87,7 +106,7 @@ def get_trend(symbol, interval):
     if len(data) < 21:
         return None
 
-    closes = [float(c[4]) for c in reversed(data)]  # close price
+    closes = [float(c[4]) for c in reversed(data)]
 
     ema9 = sum(closes[-9:]) / 9
     ema21 = sum(closes[-21:]) / 21
