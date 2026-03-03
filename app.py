@@ -29,24 +29,25 @@ SCAN_PAIRS = [
     "ARBUSDT","AVAXUSDT","DOGEUSDT","LINKUSDT"
 ]
 
-BASE_URL = "https://api.binance.com"
+BASE_URL = "https://api.bybit.com"
 
-# ================= BINANCE =================
+# ================= BYBIT FUTURES =================
 
 def get_price(symbol):
     try:
         r = requests.get(
-            f"{BASE_URL}/api/v3/ticker/price",
-            params={"symbol": symbol},
+            f"{BASE_URL}/v5/market/tickers",
+            params={"category": "linear", "symbol": symbol},
             timeout=10
         )
 
-        if r.status_code != 200:
-            print("PRICE ERROR:", r.status_code)
+        data = r.json()
+
+        if data["retCode"] != 0:
+            print("PRICE ERROR:", data)
             return None
 
-        data = r.json()
-        return float(data["price"])
+        return float(data["result"]["list"][0]["lastPrice"])
 
     except Exception as e:
         print("GET PRICE ERROR:", e)
@@ -56,20 +57,23 @@ def get_price(symbol):
 def get_kline(symbol, interval, limit=100):
     try:
         r = requests.get(
-            f"{BASE_URL}/api/v3/klines",
+            f"{BASE_URL}/v5/market/kline",
             params={
+                "category": "linear",
                 "symbol": symbol,
-                "interval": f"{interval}m",
+                "interval": str(interval),
                 "limit": limit
             },
             timeout=10
         )
 
-        if r.status_code != 200:
-            print("KLINE ERROR:", r.status_code)
+        data = r.json()
+
+        if data["retCode"] != 0:
+            print("KLINE ERROR:", data)
             return []
 
-        return r.json()
+        return data["result"]["list"]
 
     except Exception as e:
         print("GET KLINE ERROR:", e)
@@ -83,7 +87,7 @@ def get_trend(symbol, interval):
     if len(data) < 21:
         return None
 
-    closes = [float(c[4]) for c in data]
+    closes = [float(c[4]) for c in reversed(data)]  # close price
 
     ema9 = sum(closes[-9:]) / 9
     ema21 = sum(closes[-21:]) / 21
@@ -97,7 +101,10 @@ def get_atr(symbol):
     if len(data) < 20:
         return 0
 
-    ranges = [float(c[2]) - float(c[3]) for c in data]
+    highs = [float(c[2]) for c in data]
+    lows = [float(c[3]) for c in data]
+
+    ranges = [h - l for h, l in zip(highs, lows)]
     return sum(ranges) / len(ranges)
 
 # ================= ANALYSIS =================
@@ -176,7 +183,7 @@ def auto_scan_loop():
                         bot.send_message(
                             chat_id=CHAT_ID,
                             text=f"""
-🔥 AUTO SIGNAL FUTURES
+🔥 AUTO SIGNAL FUTURES (BYBIT)
 
 {pair} {signal}
 
@@ -220,7 +227,7 @@ def webhook():
             bot.send_message(
                 chat_id=update.message.chat_id,
                 text=f"""
-📊 MANUAL CONFIRM FUTURES
+📊 MANUAL CONFIRM FUTURES (BYBIT)
 
 {pair} {signal}
 
