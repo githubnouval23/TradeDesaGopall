@@ -29,14 +29,16 @@ SCAN_PAIRS = [
     "ARBUSDT","AVAXUSDT","DOGEUSDT","LINKUSDT"
 ]
 
-BASE_URL = "https://fapi.binance.com"
+BASE_URL = "https://api.binance.com"
 
 # ================= BINANCE =================
 
 def get_price(symbol):
     try:
-        r = requests.get(f"{BASE_URL}/fapi/v1/ticker/price?symbol={symbol}", timeout=10)
-        data = r.json()
+        r = requests.get(
+    f"{BASE_URL}/api/v3/ticker/price?symbol={symbol}",
+    timeout=10
+)
 
         if "code" in data:
             return None
@@ -48,10 +50,10 @@ def get_price(symbol):
 
 def get_kline(symbol, interval, limit=100):
     try:
-        r = requests.get(
-            f"{BASE_URL}/fapi/v1/klines?symbol={symbol}&interval={interval}m&limit={limit}",
-            timeout=10
-        )
+       r = requests.get(
+    f"{BASE_URL}/api/v3/klines?symbol={symbol}&interval={interval}m&limit={limit}",
+    timeout=10
+)
         return r.json()
     except:
         return []
@@ -223,3 +225,4 @@ thread.start()
 requests.get(
     f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url={WEBHOOK_URL}/{BOT_TOKEN}"
 )
+
