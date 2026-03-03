@@ -36,32 +36,50 @@ BASE_URL = "https://api.binance.com"
 def get_price(symbol):
     try:
         r = requests.get(
-    f"{BASE_URL}/api/v3/ticker/price?symbol={symbol}",
-    timeout=10
-)
+            f"{BASE_URL}/api/v3/ticker/price",
+            params={"symbol": symbol},
+            timeout=10
+        )
 
-        if "code" in data:
+        if r.status_code != 200:
+            print("PRICE ERROR:", r.status_code)
             return None
 
+        data = r.json()
         return float(data["price"])
-    except:
+
+    except Exception as e:
+        print("GET PRICE ERROR:", e)
         return None
 
 
 def get_kline(symbol, interval, limit=100):
     try:
-       r = requests.get(
-    f"{BASE_URL}/api/v3/klines?symbol={symbol}&interval={interval}m&limit={limit}",
-    timeout=10
-)
+        r = requests.get(
+            f"{BASE_URL}/api/v3/klines",
+            params={
+                "symbol": symbol,
+                "interval": f"{interval}m",
+                "limit": limit
+            },
+            timeout=10
+        )
+
+        if r.status_code != 200:
+            print("KLINE ERROR:", r.status_code)
+            return []
+
         return r.json()
-    except:
+
+    except Exception as e:
+        print("GET KLINE ERROR:", e)
         return []
 
 # ================= INDICATORS =================
 
 def get_trend(symbol, interval):
     data = get_kline(symbol, interval, 100)
+
     if len(data) < 21:
         return None
 
@@ -74,7 +92,8 @@ def get_trend(symbol, interval):
 
 
 def get_atr(symbol):
-    data = get_kline(symbol, "15", 20)
+    data = get_kline(symbol, 15, 20)
+
     if len(data) < 20:
         return 0
 
@@ -89,9 +108,9 @@ def analyze_pair(pair):
     if not price:
         return None
 
-    pair15 = get_trend(pair,"15")
-    pair5 = get_trend(pair,"5")
-    btc1h = get_trend("BTCUSDT","60")
+    pair15 = get_trend(pair, 15)
+    pair5 = get_trend(pair, 5)
+    btc1h = get_trend("BTCUSDT", 60)
 
     if not pair15 or not btc1h:
         return None
@@ -99,25 +118,29 @@ def analyze_pair(pair):
     score = 50
 
     if pair15 == "bullish" and btc1h == "bullish":
-        signal="LONG"
-        score+=25
+        signal = "LONG"
+        score += 25
     elif pair15 == "bearish" and btc1h == "bearish":
-        signal="SHORT"
-        score+=25
+        signal = "SHORT"
+        score += 25
     else:
         return None
 
     if pair5 == pair15:
-        score+=15
+        score += 15
 
     atr = get_atr(pair)
     if atr == 0:
         return None
 
-    sl = round(price - atr*1.2,4) if signal=="LONG" else round(price + atr*1.2,4)
-    tp = round(price + atr*2,4) if signal=="LONG" else round(price - atr*2,4)
+    if signal == "LONG":
+        sl = round(price - atr * 1.2, 4)
+        tp = round(price + atr * 2, 4)
+    else:
+        sl = round(price + atr * 1.2, 4)
+        tp = round(price - atr * 2, 4)
 
-    rr = abs(tp-price)/abs(price-sl)
+    rr = abs(tp - price) / abs(price - sl)
 
     if rr < 1.8:
         return None
@@ -145,7 +168,6 @@ def auto_scan_loop():
                     result = analyze_pair(pair)
 
                     if result:
-
                         auto_signal_counter["count"] += 1
                         pair, signal, price, sl, tp, rr, score = result
 
@@ -166,7 +188,6 @@ RR: {round(rr,2)}
 Confidence: {score}/100
 """
                         )
-
                         break
 
         except Exception as e:
@@ -216,13 +237,10 @@ Confidence: {score}/100
 
 # ================= START =================
 
-# JALAN SELALU (TIDAK TERGANTUNG __main__)
 thread = threading.Thread(target=auto_scan_loop)
 thread.daemon = True
 thread.start()
 
-# Set webhook sekali saat boot
 requests.get(
     f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url={WEBHOOK_URL}/{BOT_TOKEN}"
 )
-
